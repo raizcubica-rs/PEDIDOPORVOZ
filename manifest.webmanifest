@@ -1,0 +1,33 @@
+{
+ "name": "Pedido por Voz",
+ "short_name": "Pedidos",
+ "description": "Pedidos por voz, proformas, inventario, clientes y caja para tu tienda.",
+ "lang": "es-PE",
+ "start_url": "./",
+ "scope": "./",
+ "display": "standalone",
+ "orientation": "portrait",
+ "background_color": "#f3f2f5",
+ "theme_color": "#b0195a",
+ "id": "./",
+ "icons": [
+  {
+   "src": "icons/icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png",
+   "purpose": "any"
+  },
+  {
+   "src": "icons/icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "any"
+  },
+  {
+   "src": "icons/maskable-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "maskable"
+  }
+ ]
+}
