@@ -323,6 +323,36 @@ dl.ficha dd{margin:0;font-weight:600}
 
 <script src="vendor/jspdf.umd.min.js"></script>
 <script>
+/* ===== Almacenamiento en el celular =====
+   Los datos van en IndexedDB (espacio de cientos de MB), no en localStorage (tope ~5 MB, que se llenaba
+   con unos meses de ventas o unas 250 fotos). Al abrir se cargan a memoria y luego arranca la app. */
+const STORE_KEYS=["negocio","inv-over","inv-custom","fotos","ventas","cobros","clientes","pedidos","campanas","cajas"];
+let STORE={},DB=null,dirty=new Set(),flushing=null;
+function idbOpen(){return new Promise((res,rej)=>{const r=indexedDB.open("pedido-por-voz",1);r.onupgradeneeded=()=>r.result.createObjectStore("kv");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+function idbTx(mode,fn){return new Promise((res,rej)=>{const tx=DB.transaction("kv",mode);const st=tx.objectStore("kv");const out=fn(st);tx.oncomplete=()=>res(out);tx.onerror=tx.onabort=()=>rej(tx.error)})}
+async function storeBoot(){
+  try{
+    DB=await idbOpen();
+    const got={};await idbTx("readonly",st=>STORE_KEYS.forEach(k=>{const r=st.get(k);r.onsuccess=()=>{if(r.result!==undefined)got[k]=r.result}}));
+    STORE=got;
+    // Primera vez con esta versión: pasar lo que había en localStorage
+    if(!Object.keys(got).length){const old={};STORE_KEYS.forEach(k=>{try{const v=localStorage.getItem(k);if(v!=null)old[k]=JSON.parse(v)}catch(e){}});
+      if(Object.keys(old).length){await idbTx("readwrite",st=>{for(const k in old)st.put(old[k],k)});STORE=old;STORE_KEYS.forEach(k=>{try{localStorage.removeItem(k)}catch(e){}})}}
+  }catch(e){DB=null;STORE={};STORE_KEYS.forEach(k=>{try{const v=localStorage.getItem(k);if(v!=null)STORE[k]=JSON.parse(v)}catch(_){}})}
+}
+function flushStore(){
+  if(!DB||!dirty.size)return flushing||Promise.resolve(true);
+  const keys=[...dirty];dirty.clear();
+  const p=(flushing||Promise.resolve()).then(()=>idbTx("readwrite",st=>keys.forEach(k=>st.put(STORE[k],k)))).then(()=>true,e=>{keys.forEach(k=>dirty.add(k));
+    toast(e&&e.name==="QuotaExceededError"?"El celular se quedó sin espacio. Libera espacio y descarga un respaldo.":"No se pudo guardar en este celular. Descarga un respaldo.");return false});
+  flushing=p;return p;
+}
+async function storeClear(){if(DB)await idbTx("readwrite",st=>st.clear());STORE_KEYS.forEach(k=>{try{localStorage.removeItem(k)}catch(e){}})}
+addEventListener("pagehide",()=>flushStore());
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="hidden")flushStore()});
+storeBoot().then(()=>{const s=document.createElement("script");s.textContent=document.getElementById("app-src").textContent;document.body.append(s)});
+</script>
+<script type="text/x-app" id="app-src">
 /* ===== Datos del negocio (se cambian desde el engranaje) ===== */
 const NEGOCIO_DEFAULT = {
   nombre: "Mi Negocio de Accesorios",
@@ -420,8 +450,9 @@ const FICHA_CAMPOS=[["medida","Medida"],["material","Material"],["acabado","Acab
 const EJEMPLO = "cinco bisagras rectas de tres pulgadas, un pistón de 60, dos bisagras normales, tres pares de correderas de 45, una caja de tornillo 4 por 50, cuatro soportes cromados, un ciento de tornillo 3.5 por 15 y una plancha de tapa tornillo capri";
 
 /* ===== Almacenamiento local (solo en este celular) ===== */
-function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
-function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
+function load(k,d){const v=STORE[k];return v===undefined||v===null?d:v}
+function save(k,v){STORE[k]=v;if(!DB){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
+  if(!dirty.size)queueMicrotask(flushStore);dirty.add(k);return true}
 let negocio=Object.assign({},NEGOCIO_DEFAULT,load("negocio",{}));
 let overrides=load("inv-over",{});
 let custom=load("inv-custom",[]);
@@ -434,8 +465,11 @@ let campanas=load("campanas",[]);
 let cajas=load("cajas",{});
 let inv=[];
 function buildInv(){
+  // Reusa el índice de búsqueda de cada producto si su nombre no cambió (tras una venta solo cambia el stock)
+  const prev=new Map(inv.map(p=>[p.c,p]));
   inv=BASE.concat(custom).map(p=>{const o=overrides[p.c]||{};const q=Object.assign({},p,o);q.ficha=Object.assign({},p.ficha||{},o.ficha||{});return q});
-  inv.forEach(indexProduct);
+  inv.forEach(q=>{const k=q.n+"|"+(q.syn||[]).join("|")+"|"+q.cat+"|"+(q.tipo||""),o=prev.get(q.c);
+    if(o&&o._k===k){q._name=o._name;q._nums=o._nums;q._syn=o._syn;q._synPh=o._synPh;q._cat=o._cat;q._tipo=o._tipo}else indexProduct(q);q._k=k});
 }
 let order=[]; let isDemo=false; let orderStart=null;
 let cliente={id:null,nombre:"",cel:"",doc:"",promo:false};
@@ -816,22 +850,28 @@ function renderCatbar(){
   const cats=["Todas"].concat(CATS,[...new Set(custom.map(p=>p.cat))].filter(c=>!CATS.includes(c)));
   cats.forEach(c=>bar.append(el("button",{class:"seg","aria-pressed":String(c===catSel),onclick:()=>{catSel=c;renderInv()}},c)));
 }
+const INV_PAGE=200;let invLimit=INV_PAGE,invKey="";
 function renderInv(){
   renderCatbar();
+  const k=catSel+"|"+$("#inv-q").value;if(k!==invKey){invKey=k;invLimit=INV_PAGE}
   const q=$("#inv-q").value;
   let list=catSel==="Todas"?inv:inv.filter(p=>p.cat===catSel);
   list=searchInv(q,list);
   $("#inv-count").textContent=list.length+" productos · toca uno para ver su ficha"+(role!=="dueno"?" (solo lectura)":"");
   const box=$("#inv");box.textContent="";
-  if(q){const l=el("div",{class:"list"});list.forEach(p=>l.append(invItem(p)));box.append(l);return}
-  const cats=[...new Set(list.map(p=>p.cat))];
-  cats.forEach(cat=>{
+  const more=()=>{if(list.length>invLimit)box.append(el("button",{class:"btn block",onclick:()=>{invLimit+=INV_PAGE;renderInv()}},"Mostrar más ("+(list.length-invLimit)+" restantes)"))};
+  if(q){const l=el("div",{class:"list"});list.slice(0,invLimit).forEach(p=>l.append(invItem(p)));box.append(l);more();return}
+  // Agrupar por categoría y tipo en una sola pasada
+  const groups=new Map();list.forEach(p=>{let g=groups.get(p.cat);if(!g)groups.set(p.cat,g=new Map());const t=p.tipo||"General";if(!g.has(t))g.set(t,[]);g.get(t).push(p)});
+  let left=invLimit;
+  for(const [cat,tipos] of groups){
+    if(left<=0)break;
     if(catSel==="Todas")box.append(el("h3",{class:"grp"},cat));
     const l=el("div",{class:"list"});
-    const tipos=[...new Set(list.filter(p=>p.cat===cat).map(p=>p.tipo||"General"))];
-    tipos.forEach(t=>{if(tipos.length>1)l.append(el("div",{class:"sub-grp"},t));list.filter(p=>p.cat===cat&&(p.tipo||"General")===t).forEach(p=>l.append(invItem(p)))});
+    for(const [t,ps] of tipos){if(left<=0)break;if(tipos.size>1)l.append(el("div",{class:"sub-grp"},t));ps.slice(0,left).forEach(p=>l.append(invItem(p)));left-=ps.length}
     box.append(l);
-  });
+  }
+  more();
 }
 function invItem(p){
   const low=p.u!=="m2"&&p.s<=lowLimit(p);
@@ -917,12 +957,14 @@ function renderClientes(){
   $("#cli-count").textContent=list.length+" cliente"+(list.length!==1?"s":"")+" · ordenados por lo que compran";
   const box=$("#clis");box.textContent="";
   if(!list.length)box.append(el("div",{class:"item"},el("span"),el("span",{class:"sub"},"No hay clientes en este grupo. Se agregan solos al registrar una venta con nombre o celular.")));
-  list.forEach(c=>box.append(el("button",{class:"item",onclick:()=>showCliente(c)},
+  const cliKey=segSel+"|"+q;if(cliKey!==renderClientes.k){renderClientes.k=cliKey;renderClientes.lim=200}
+  list.slice(0,renderClientes.lim).forEach(c=>box.append(el("button",{class:"item",onclick:()=>showCliente(c)},
     el("div",{class:"avatar"},(c.nombre||"?").trim().charAt(0).toUpperCase()),
     el("span",{class:"nm"},c.nombre," ",(c.compras||0)>=3?el("span",{class:"pill fav"},"frecuente"):null,c.ejemplo?el("span",{class:"pill ex"},"ejemplo"):null),
     el("span",{class:"pr"},money(c.gastado||0)),
     el("span",{class:"sub"},(c.tipo||"Particular")+" · "+(c.compras||0)+" compra"+((c.compras||0)!==1?"s":"")+(c.ultima?" · última "+cuando(c.ultima):"")),
     el("span",{class:"sub"},c.promo?"acepta promos":""))));
+  if(list.length>renderClientes.lim)box.append(el("button",{class:"btn block",onclick:()=>{renderClientes.lim+=200;renderClientes()}},"Mostrar más ("+(list.length-renderClientes.lim)+" restantes)"));
   const cb=$("#camps");cb.textContent="";
   $("#camp-panel").hidden=!campanas.length;
   campanas.slice().reverse().slice(0,5).forEach(k=>cb.append(el("div",{class:"row between"},el("span",null,fechaCorta(k.f)+" · "+k.seg),el("strong",null,k.enviados+" enviado"+(k.enviados!==1?"s":"")))));
@@ -1360,7 +1402,7 @@ function configSheet(){
       el("p",{class:"hint"},"Descarga una copia de inventario, fotos, clientes, ventas y pedidos. Guárdala en Google Drive o envíatela por WhatsApp."),
       el("div",{class:"grid2"},el("button",{class:"btn",onclick:()=>{const data=JSON.stringify({app:"pedido-por-voz",v:2,f:new Date().toISOString(),negocio,overrides,custom,fotos,history,cobros,clientes,pedidos,campanas,cajas});saveFile("respaldo-"+hoyISO(0)+".json",data)}},"Descargar respaldo"),el("button",{class:"btn",onclick:()=>$("#file-backup").click()},"Restaurar respaldo")),
       el("button",{class:"btn ghost block",onclick:()=>{clientes=clientes.filter(c=>!c.ejemplo);pedidos=pedidos.filter(p=>!p.ejemplo);persist();closeSheet();refresh();toast("Datos de ejemplo borrados")}},"Borrar clientes y pedidos de ejemplo"),
-      el("button",{class:"btn ghost block",onclick:()=>{if(sh.querySelector("#cf-confirm")){try{["inv-over","inv-custom","ventas","cobros","negocio","clientes","pedidos","campanas","fotos","cajas"].forEach(k=>localStorage.removeItem(k))}catch(e){}location.reload()}else sh.append(el("p",{class:"flag",id:"cf-confirm"},"Toca otra vez para borrar todo y empezar de cero."))}},"Reiniciar demo"),
+      el("button",{class:"btn ghost block",onclick:()=>{if(sh.querySelector("#cf-confirm")){storeClear().catch(()=>{}).then(()=>location.reload())}else sh.append(el("p",{class:"flag",id:"cf-confirm"},"Toca otra vez para borrar todo y empezar de cero."))}},"Reiniciar demo"),
       el("button",{class:"btn block",onclick:closeSheet},"Cerrar"));
     f.nombre.dataset.nofocus="1";
   });
@@ -1433,7 +1475,7 @@ function loadDemo(){order=parseOrder(EJEMPLO);isDemo=true;orderStart=null;render
 buildInv();seed();loadLogo();renderBiz();loadDemo();renderPendientes();initVoice();
 
 /* ===== App instalada (PWA) ===== */
-if("serviceWorker" in navigator){window.addEventListener("load",()=>{navigator.serviceWorker.register("sw.js").then(reg=>{
+if("serviceWorker" in navigator){const regSW=f=>document.readyState==="complete"?f():window.addEventListener("load",f);regSW(()=>{navigator.serviceWorker.register("sw.js").then(reg=>{
   reg.addEventListener("updatefound",()=>{const w=reg.installing;w&&w.addEventListener("statechange",()=>{if(w.state==="installed"&&navigator.serviceWorker.controller)toast("Hay una versión nueva. Cierra y abre la app para usarla.")})})}).catch(()=>{})})}
 if(navigator.storage&&navigator.storage.persist){navigator.storage.persisted().then(p=>{if(!p)navigator.storage.persist()}).catch(()=>{})}
 let installEvt=null;

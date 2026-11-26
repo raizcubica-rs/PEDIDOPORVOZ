@@ -1,5 +1,5 @@
 // Service worker: guarda la app y sus librerías para que abra sin internet.
-const CACHE="pedido-por-voz-v3-2026-11-26";
+const CACHE="pedido-por-voz-v4-2026-11-26";
 const CORE=["./","index.html","manifest.webmanifest","icons/icon-192.png","icons/icon-512.png","icons/maskable-512.png","logo-proforma.png",
  "vendor/jspdf.umd.min.js","vendor/xlsx.full.min.js","vendor/pdf.min.js","vendor/pdf.worker.min.js"];
 const LAZY=[];
