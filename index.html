@@ -326,7 +326,7 @@ dl.ficha dd{margin:0;font-weight:600}
 /* ===== Almacenamiento en el celular =====
    Los datos van en IndexedDB (espacio de cientos de MB), no en localStorage (tope ~5 MB, que se llenaba
    con unos meses de ventas o unas 250 fotos). Al abrir se cargan a memoria y luego arranca la app. */
-const STORE_KEYS=["negocio","inv-over","inv-custom","fotos","ventas","cobros","clientes","pedidos","campanas","cajas"];
+const STORE_KEYS=["negocio","inv-over","inv-custom","fotos","ventas","cobros","clientes","pedidos","campanas","cajas","borrador"];
 let STORE={},DB=null,dirty=new Set(),flushing=null;
 function idbOpen(){return new Promise((res,rej)=>{const r=indexedDB.open("pedido-por-voz",1);r.onupgradeneeded=()=>r.result.createObjectStore("kv");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 function idbTx(mode,fn){return new Promise((res,rej)=>{const tx=DB.transaction("kv",mode);const st=tx.objectStore("kv");const out=fn(st);tx.oncomplete=()=>res(out);tx.onerror=tx.onabort=()=>rej(tx.error)})}
@@ -502,7 +502,16 @@ function numerize(t){
   t=t.replace(new RegExp("\\b("+Object.keys(DEC).join("|")+")\\s+y\\s+"+ONES+"\\b","g"),(m,a,b)=>String(DEC[a]+UNI[b]));
   t=t.replace(new RegExp("\\b("+Object.keys(DEC).concat(Object.keys(UNI)).join("|")+")\\b","g"),m=>String(DEC[m]||UNI[m]));
   t=t.replace(/\b(\d+)\s+punto\s+(\d+)\b/g,"$1.$2");
-  t=t.replace(/\b(\d+)\s+(?:pulgadas?\s+)?y\s+medi[ao]\b/g,(m,a)=>String(+a+0.5));
+  t=t.replace(/\bmedio\s+metro\b/g,"0.5 metros");
+  t=t.replace(/\b(\d+)\s+(pulgadas?\s+|metros?\s+)?y\s+medi[ao]\b/g,(m,a,u)=>String(+a+0.5)+(u&&u[0]==="m"?" metros":""));
+  // Medidas dichas: "un metro veinte" = 1.20, "dos metros cinco" = 2.05, "80 centimetros" = 0.80
+  t=t.replace(/\b(\d+)\s+metros?\s+(?:con\s+)?(\d{1,2})(?![\d.])(?!\s*(?:mm|cm|pulg|n\b|kg|ml))/g,(m,a,b)=>a+"."+b.padStart(2,"0"));
+  t=t.replace(/\b(\d+(?:\.\d+)?)\s*(?:centimetros?|cm)\b(?=\s*(?:por|x|×)\s)/g,(m,a)=>String(+a/100));
+  t=t.replace(/((?:por|x|×)\s+)(\d+(?:\.\d+)?)\s*(?:centimetros?|cm)\b/g,(m,a,b)=>a+String(+b/100));
+  t=t.replace(/\b(\d+(?:\.\d+)?)\s+metros?\s*(?=(?:por|x|×)\s)/g,"$1 ");
+  // "uno veinte por uno ochenta" = 1.20 x 1.80
+  t=t.replace(/\b(\d)\s+(\d{2})(?=\s*(?:por|x|×)\s)/g,"$1.$2");
+  t=t.replace(/((?:por|x|×)\s+)(\d)\s+(\d{2})(?![\d.])/g,"$1$2.$3");
   t=t.replace(/(\d+(?:\.\d+)?)\s*(?:por|x|×)\s*(\d+(?:\.\d+)?)/g,"$1x$2");
   t=t.replace(/\b(un|1)\s+cuarto\b/g,"1/4").replace(/\b(3)\s+octavos\b/g,"3/8").replace(/\b(3)\s+cuartos\b/g,"3/4");
   return t;
@@ -539,7 +548,17 @@ function score(p,q){
   [...p._name].forEach(w=>{if(!q.words.includes(w)&&!p._cat.has(w))sc-=.5});
   return sc;
 }
+function codeKey(c){return norm(c).replace(/[^a-z0-9]/g,"")}
+function byCodeText(text){
+  // Si se escribe o dicta un código (ej. TOR-450), ese producto gana
+  const ws=norm(text).split(/[^a-z0-9-]+/).filter(Boolean),cand=ws.filter(w=>/[a-z]-?[a-z0-9]|\d-/.test(w)&&w.includes("-"));
+  for(let i=0;i+1<ws.length;i++)if(/^[a-z]{2,4}$/.test(ws[i])&&/^\d{2,4}$/.test(ws[i+1]))cand.push(ws[i]+ws[i+1]);
+  for(const w of cand){const k=codeKey(w);if(k.length<4)continue;const p=inv.find(x=>codeKey(x.c)===k);if(p)return p}
+  return null;
+}
 function matchProduct(text){
+  const pc=byCodeText(text);
+  if(pc)return {code:pc.c,status:"ok",cands:[pc.c]};
   const q=tokens(text);
   if(!q.words.length&&!q.nums.length)return null;
   const ranked=inv.map(p=>({p,sc:score(p,q)})).sort((a,b)=>b.sc-a.sc);
@@ -568,12 +587,12 @@ function parseOrder(raw){
     if(qty==null)qty=1;
     const p=r.code&&byCode(r.code);
     if(p&&p.u==="ciento"&&qty>=100&&!(unit&&unit.startsWith("ciento")))qty=qty/100;
-    const line={id:uid(),q:Math.max(1,Math.round(qty)),code:r.code,status:r.status,cands:r.cands,heard:seg,med:null};
+    const line={id:uid(),q:Math.round(qty*100)/100||1,code:r.code,status:r.status,cands:r.cands,heard:seg,med:null};
     if(p&&p.u==="m2"){
       const d=rest.match(/(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)/);
       if(d){let an=+d[1],al=+d[2];if(an>10)an/=100;if(al>10)al/=100;line.med={an,al}}
     }
-    out.push(line);
+    fixQ(line);out.push(line);
   });
   return out;
 }
@@ -582,13 +601,33 @@ function addFromText(text){
   if(!lines.length){toast("No reconocí productos. Intenta de nuevo.");return}
   if(isDemo){order=[];isDemo=false}
   if(!orderStart)orderStart=Date.now();
-  lines.forEach(l=>{const p=l.code&&byCode(l.code);const ex=l.status==="ok"&&p&&p.u!=="m2"&&order.find(o=>o.code===l.code&&o.status==="ok");if(ex)ex.q+=l.q;else order.push(l)});
+  lines.forEach(l=>{const p=l.code&&byCode(l.code);const ex=l.status==="ok"&&p&&p.u!=="m2"&&order.find(o=>o.code===l.code&&o.status==="ok");if(ex)ex.q=Math.round((ex.q+l.q)*100)/100;else order.push(l)});
   renderOrder();
   const dud=lines.filter(l=>needsCheck(l)).length;
   toast(lines.length+" producto"+(lines.length>1?"s":"")+" agregado"+(lines.length>1?"s":"")+(dud?" · revisa "+dud+" en amarillo":""));
 }
 
 /* ===== Pedido ===== */
+// Metros (tapacanto, riel) se venden con decimales: 2.5 m. Lo demás, en unidades enteras.
+function fraccionable(p){return !!p&&p.u==="metro"}
+function fixQ(l){const p=l.code&&byCode(l.code);l.q=+l.q||1;if(!p||fraccionable(p))l.q=Math.max(.01,Math.round(l.q*100)/100);else l.q=Math.max(1,Math.round(l.q));return l}
+function fmtQ(q){return Number.isInteger(q)?String(q):String(Math.round(q*100)/100)}
+// Cuánto se pide de cada producto (sumando líneas repetidas) contra el stock
+function faltantes(lines){
+  const tot={};(lines||validLines()).forEach(l=>{const p=byCode(l.code);if(p.u!=="m2")tot[p.c]=(tot[p.c]||0)+l.q});
+  return Object.keys(tot).map(c=>({p:byCode(c),pide:Math.round(tot[c]*100)/100})).filter(x=>x.pide>(+x.p.s||0)).map(x=>Object.assign(x,{hay:Math.max(0,+x.p.s||0)}));
+}
+function pendientes(){return order.filter(l=>!validLines().includes(l))}
+function pendDesc(l){const p=l.code&&byCode(l.code);if(p&&p.u==="m2")return fmtQ(l.q)+" x "+p.n+" (falta la medida)";return fmtQ(l.q)+" x "+(p?p.n:(l.heard||"producto").replace(/^\d+(\.\d+)?\s*/,""))+" (por identificar)"}
+// El pedido en curso se guarda en el celular: si se recarga o se cierra la app, sigue ahí
+function saveDraft(){if(isDemo)return;save("borrador",{order,cliente,ent:{on:ent.on,touched:!!ent.touched,fecha:ent.fecha,pct:ent.pct},orderStart})}
+function loadDraft(){
+  const d=load("borrador",null);if(!d||!Array.isArray(d.order))return false;
+  order=d.order.filter(l=>l&&typeof l==="object").map(l=>Object.assign({id:uid(),q:1,code:null,status:"unknown",cands:[],heard:"",med:null},l));
+  if(d.cliente)cliente=Object.assign({id:null,nombre:"",cel:"",doc:"",promo:false},d.cliente);
+  if(d.ent)Object.assign(ent,d.ent);
+  orderStart=d.orderStart||null;isDemo=false;return true;
+}
 function needsCheck(l){const p=l.code&&byCode(l.code);return l.status!=="ok"||!p||(p.u==="m2"&&!l.med)}
 function m2(l){return l.med?Math.round(l.med.an*l.med.al*100)/100:0}
 function unitPrice(l){const p=byCode(l.code);return p.u==="m2"?p.p*m2(l):p.p}
@@ -603,13 +642,15 @@ function renderOrder(){
   const cb=$("#cli-banner");cb.hidden=!cliente.nombre;cb.textContent="";
   if(cliente.nombre)cb.append(el("span",null,"Cliente: ",el("b",null,cliente.nombre)),el("button",{class:"btn small",onclick:()=>{cliente={id:null,nombre:"",cel:"",doc:"",promo:false};renderOrder()}},"Quitar"));
   if(!order.length)box.append(el("div",{class:"empty"},"Todavía no hay productos. Toca el micrófono y dicta el pedido como se lo dirías a un ayudante."));
+  const falta=faltantes();
   order.forEach(l=>{
-    const p=l.code&&byCode(l.code);
-    const qIn=el("input",{type:"number",inputmode:"numeric",min:"1",value:l.q,"aria-label":"Cantidad",id:"q-"+l.id});
-    qIn.addEventListener("change",()=>{l.q=Math.max(1,parseInt(qIn.value)||1);renderOrder()});
+    const p=l.code&&byCode(l.code);fixQ(l);
+    const fr=!p||fraccionable(p);
+    const qIn=el("input",{type:"number",inputmode:fr?"decimal":"numeric",min:fr?"0.01":"1",step:fr?"0.01":"1",value:l.q,"aria-label":"Cantidad",id:"q-"+l.id});
+    qIn.addEventListener("change",()=>{l.q=parseFloat(String(qIn.value).replace(",","."))||1;fixQ(l);renderOrder()});
     const step=el("div",{class:"stepper"},
-      el("button",{"aria-label":"Sumar uno",onclick:()=>{l.q++;renderOrder()}},"+"),qIn,
-      el("button",{"aria-label":"Restar uno",onclick:()=>{l.q=Math.max(1,l.q-1);renderOrder()}},"−"));
+      el("button",{"aria-label":"Sumar uno",onclick:()=>{l.q=Math.round((l.q+1)*100)/100;renderOrder()}},"+"),qIn,
+      el("button",{"aria-label":"Restar uno",onclick:()=>{l.q=l.q>1?Math.round((l.q-1)*100)/100:l.q;renderOrder()}},"−"));
     let meta;
     if(!p)meta=el("div",{class:"flag"},"No lo encontré en el inventario");
     else if(p.u==="m2"){
@@ -620,7 +661,9 @@ function renderOrder(){
       meta=el("div",{style:"display:flex;flex-direction:column;gap:6px"},
         el("div",{class:"med"},"Medida (m):",an,"×",al),
         l.med?el("div",{class:"pmeta"},el("span",null,money(p.p)+"/m² × "+m2(l)+" m² × "+l.q),el("strong",null,money(lineTotal(l)))):el("div",{class:"flag"},"Falta la medida (ancho × alto)"));
-    }else meta=el("div",{class:"pmeta"},el("span",null,money(p.p)+" × "+l.q),el("strong",null,money(p.p*l.q)));
+    }else{const fx=falta.find(x=>x.p.c===p.c);
+      meta=el("div",{class:"pmeta"},el("span",null,money(p.p)+" × "+fmtQ(l.q)+(p.u==="metro"?" m":"")),el("strong",null,money(p.p*l.q)));
+      if(fx)meta=el("div",{style:"display:flex;flex-direction:column;gap:6px"},meta,el("div",{class:"flag"},"Stock: solo hay "+fmtQ(fx.hay)+" "+(u=>fx.hay===1?u:u+(/[aeiou]$/.test(u)?"s":"es"))(UNIDADES[p.u]||p.u)+". Faltan "+fmtQ(Math.round((fx.pide-fx.hay)*100)/100)+"."))}
     const main=el("div",{class:"line-main"},
       el("button",{class:"pname",onclick:()=>openPicker(l)},el("u",null,p?p.n:"¿Qué producto es?")),meta,
       l.heard?el("div",{class:"heard"},"Escuché: “"+l.heard+"”"):null);
@@ -640,6 +683,7 @@ function renderOrder(){
   const n=validLines().length,dud=order.filter(needsCheck).length;
   $("#tb-count").textContent=n+" producto"+(n!==1?"s":"")+(dud?" · "+dud+" por revisar":"");
   $("#tb-total").textContent=money(orderTotal());
+  saveDraft();
 }
 
 /* ===== Hoja inferior genérica ===== */
@@ -684,8 +728,11 @@ $("#btn-who").addEventListener("click",()=>{
 function searchInv(q,list){
   list=list||inv;
   const t=tokens(numerize(norm(q)));
-  if(!t.words.length&&!t.nums.length)return list.slice();
-  return list.map(p=>({p,sc:score(p,t)})).filter(r=>r.sc>0).sort((a,b)=>b.sc-a.sc).map(r=>r.p);
+  // Búsqueda por código (TOR-450, tor450, TOR): primero los códigos que coinciden
+  const k=codeKey(q),byC=k.length>=3&&/\d|^[a-z]{3,4}$/.test(k)?list.filter(p=>codeKey(p.c).startsWith(k)):[];
+  if(!t.words.length&&!t.nums.length)return byC.length?byC:list.slice();
+  const rest=list.map(p=>({p,sc:score(p,t)})).filter(r=>r.sc>0&&!byC.includes(r.p)).sort((a,b)=>b.sc-a.sc).map(r=>r.p);
+  return byC.concat(rest);
 }
 function addProductToOrder(p){
   if(isDemo){order=[];isDemo=false}
@@ -729,13 +776,15 @@ function renderProforma(){
   const tb=el("tbody");
   const vl=validLines();
   if(!vl.length)tb.append(el("tr",null,el("td",{colspan:"4",style:"text-align:center;color:#7a6872;padding:18px"},"El pedido está vacío. Dicta productos en la pestaña Pedido.")));
-  vl.forEach(l=>{tb.append(el("tr",null,el("td",{class:"n"},String(l.q).padStart(2,"0")),el("td",null,lineDesc(l)),el("td",{class:"n"},unitPrice(l).toFixed(2)),el("td",{class:"n"},lineTotal(l).toFixed(2))))});
+  vl.forEach(l=>{tb.append(el("tr",null,el("td",{class:"n"},fmtQ(l.q).padStart(2,"0")),el("td",null,lineDesc(l)),el("td",{class:"n"},unitPrice(l).toFixed(2)),el("td",{class:"n"},lineTotal(l).toFixed(2))))});
   const table=el("div",{class:"ptable-wrap"},el("table",{class:"pt"},el("thead",null,el("tr",null,el("th",null,"CANT."),el("th",null,"DESCRIPCIÓN"),el("th",{class:"n"},"P. UNIT."),el("th",{class:"n"},"IMPORTE"))),tb));
   const tot=orderTotal(),base=tot/1.18;
   const tots=el("div",{class:"ptot"},el("div",null,el("span",null,"Op. gravada"),el("span",null,money(base))),el("div",null,el("span",null,"IGV 18%"),el("span",null,money(tot-base))),el("div",{class:"big"},el("span",null,"TOTAL"),el("span",null,money(tot))));
   if(ent.on)tots.append(el("div",{class:"pay"},el("span",null,"Inicial"),el("span",null,money(entInicial()))),el("div",{class:"pay"},el("span",null,"Saldo"),el("span",null,money(tot-entInicial()))));
-  const pend=order.filter(l=>!validLines().includes(l)).length;
-  pp.append(head,fields,table,tots,el("div",{class:"pnote"},(ent.on?"Fecha de entrega: "+fechaCorta(ent.fecha)+". ":"")+"Precios incluyen IGV. Proforma válida por 7 días."+(pend?" Hay "+pend+" línea(s) sin producto o sin medida que no se incluyen.":"")));
+  const pend=pendientes();
+  pp.append(head,fields,table,tots);
+  if(pend.length)pp.append(el("div",{class:"pnote flag"},el("b",null,"Cotización incompleta. Falta confirmar (no incluido en el total):"),...pend.map(l=>el("div",null,"• "+pendDesc(l)))));
+  pp.append(el("div",{class:"pnote"},(ent.on?"Fecha de entrega: "+fechaCorta(ent.fecha)+". ":"")+"Precios incluyen IGV. Proforma válida por 7 días."));
   $("#ent-ini").textContent=money(entInicial());$("#ent-saldo").textContent=money(tot-entInicial());
   $("#btn-sell").textContent=ent.on?"Registrar pedido y cobrar inicial":"Registrar venta";
   updateWa();
@@ -743,19 +792,22 @@ function renderProforma(){
 $("#ent-on").addEventListener("change",e=>{ent.on=e.target.checked;ent.touched=true;renderProforma()});
 $("#ent-fecha").addEventListener("change",e=>{ent.fecha=e.target.value||hoyISO(2);renderProforma()});
 $("#ent-pct").addEventListener("change",e=>{ent.pct=+e.target.value;renderProforma()});
-$("#cli-doc").addEventListener("input",e=>{cliente.doc=e.target.value});
-$("#cli-promo").addEventListener("change",e=>{cliente.promo=e.target.checked});
+$("#cli-doc").addEventListener("input",e=>{cliente.doc=e.target.value;saveDraft()});
+$("#cli-promo").addEventListener("change",e=>{cliente.promo=e.target.checked;saveDraft()});
 function proformaText(){
   const L=["*"+negocio.nombre+"*","Proforma N° "+pad(negocio.siguiente)+" · "+fechaCorta(hoyISO(0))];
   if(cliente.nombre)L.push("Cliente: "+cliente.nombre);
   L.push("");
-  validLines().forEach(l=>L.push(l.q+" x "+lineDesc(l)+" (S/ "+unitPrice(l).toFixed(2)+") = S/ "+lineTotal(l).toFixed(2)));
-  L.push("","*TOTAL: "+money(orderTotal())+"*");
+  validLines().forEach(l=>L.push(fmtQ(l.q)+" x "+lineDesc(l)+" (S/ "+unitPrice(l).toFixed(2)+") = S/ "+lineTotal(l).toFixed(2)));
+  const pend=pendientes();
+  if(pend.length){L.push("","*Falta confirmar (no incluido en el total):*");pend.forEach(l=>L.push("- "+pendDesc(l)))}
+  L.push("","*TOTAL"+(pend.length?" PARCIAL":"")+": "+money(orderTotal())+"*");
+  if(pend.length)L.push("Cotización incompleta: el total cambiará al confirmar "+(pend.length===1?"el producto pendiente.":"los "+pend.length+" productos pendientes."));
   if(ent.on)L.push("Inicial: "+money(entInicial())+" · Saldo: "+money(orderTotal()-entInicial()),"Entrega: "+fechaCorta(ent.fecha));
   L.push("Precios incluyen IGV. Válida por 7 días.");
   return L.join("\n");
 }
-function updateWa(){$("#btn-wa").href=waLink(cliente.cel,proformaText())}
+function updateWa(){$("#btn-wa").href=waLink(cliente.cel,proformaText());saveDraft()}
 $("#btn-copy")&&$("#btn-copy").addEventListener("click",()=>{
   const t=proformaText();
   const fallback=()=>{const ta=el("textarea",{style:"position:fixed;opacity:0"});ta.value=t;document.body.append(ta);ta.select();try{document.execCommand("copy");toast("Texto copiado")}catch(e){toast("No se pudo copiar")}ta.remove()};
@@ -780,7 +832,7 @@ function buildPdf(){
   y+=7;doc.setFont("helvetica","normal");doc.setTextColor(30);doc.setFontSize(9);
   validLines().forEach(l=>{const d=doc.splitTextToSize(lineDesc(l),W-2*M-52);const h=Math.max(7,d.length*4+3);
     if(y+h>185){doc.addPage();y=14}
-    doc.text(String(l.q).padStart(2,"0"),M+2,y+5);doc.text(d,M+16,y+5);doc.text(unitPrice(l).toFixed(2),W-M-26,y+5,{align:"right"});doc.text(lineTotal(l).toFixed(2),W-M-2,y+5,{align:"right"});
+    doc.text(fmtQ(l.q).padStart(2,"0"),M+2,y+5);doc.text(d,M+16,y+5);doc.text(unitPrice(l).toFixed(2),W-M-26,y+5,{align:"right"});doc.text(lineTotal(l).toFixed(2),W-M-2,y+5,{align:"right"});
     y+=h;doc.setDrawColor(230,210,220);doc.setLineWidth(.2);doc.line(M,y,W-M,y)});
   const tot=orderTotal(),base=tot/1.18;y+=6;doc.setFontSize(9);doc.setTextColor(60);
   doc.text("Op. gravada",W-M-40,y);doc.text(money(base),W-M-2,y,{align:"right"});y+=5;
@@ -788,6 +840,8 @@ function buildPdf(){
   doc.setTextColor(...pk);doc.setFont("helvetica","bold");doc.setFontSize(13);doc.text("TOTAL",W-M-40,y);doc.text(money(tot),W-M-2,y,{align:"right"});
   if(ent.on){doc.setFontSize(9);y+=6;doc.text("Inicial",W-M-40,y);doc.text(money(entInicial()),W-M-2,y,{align:"right"});y+=5;doc.text("Saldo",W-M-40,y);doc.text(money(tot-entInicial()),W-M-2,y,{align:"right"})}
   y+=10;doc.setFont("helvetica","normal");doc.setFontSize(7.5);doc.setTextColor(110);doc.text((ent.on?"Fecha de entrega: "+fechaCorta(ent.fecha)+". ":"")+"Precios incluyen IGV. Proforma válida por 7 días.",M,y);
+  const pend=pendientes();
+  if(pend.length){doc.setTextColor(170,90,0);const t=doc.splitTextToSize("Cotización incompleta. Falta confirmar (no incluido en el total): "+pend.map(pendDesc).join("; "),W-2*M);doc.text(t,M,y+5)}
   return doc.output("blob");
 }
 /* Logo del negocio para proforma, PDF y JPG */
@@ -821,6 +875,21 @@ function upsertCliente(total){
 }
 $("#btn-sell").addEventListener("click",()=>{
   const vl=validLines();if(!vl.length){toast("El pedido está vacío");return}
+  const falta=faltantes(vl),pend=pendientes();
+  if(!falta.length&&!pend.length){registrarVenta();return}
+  openSheet(sh=>{
+    sh.append(el("h3",null,falta.length?"No hay stock suficiente":"Hay productos sin confirmar"));
+    if(falta.length){sh.append(el("p",{class:"hint"},"Revisa antes de registrar:"));falta.forEach(x=>sh.append(el("p",{class:"flag"},x.p.n+": pides "+fmtQ(x.pide)+", hay "+fmtQ(x.hay)+". Faltan "+fmtQ(Math.round((x.pide-x.hay)*100)/100)+".")))}
+    if(pend.length){sh.append(el("p",{class:"hint"},"No se incluyen en esta venta:"));pend.forEach(l=>sh.append(el("p",{class:"flag"},pendDesc(l))))}
+    if(falta.length)sh.append(el("button",{class:"btn primary block",onclick:()=>{
+      falta.forEach(x=>{let resto=x.hay;order.forEach(l=>{if(l.code!==x.p.c||!vl.includes(l))return;l.q=Math.min(l.q,resto);resto=Math.round((resto-l.q)*100)/100});});
+      order=order.filter(l=>!(vl.includes(l)&&l.q<=0));closeSheet();renderOrder();renderProforma();toast("Cantidades ajustadas al stock. Revisa y registra.")}},"Vender solo lo que hay"));
+    sh.append(el("button",{class:"btn block"+(falta.length?"":" primary"),onclick:()=>{closeSheet();registrarVenta()}},falta.length?"Registrar igual (el stock quedará en negativo)":"Registrar sin esos productos"),
+      el("button",{class:"btn block",onclick:closeSheet},"Cancelar"));
+  });
+});
+function registrarVenta(){
+  const vl=validLines();if(!vl.length){toast("El pedido está vacío");return}
   const tot=orderTotal(),pagado=entInicial(),metodo=$("#pago").value;
   const secs=orderStart?Math.round((Date.now()-orderStart)/1000):null;
   const c=upsertCliente(tot);
@@ -828,12 +897,12 @@ $("#btn-sell").addEventListener("click",()=>{
   const venta={n,f:new Date().toISOString(),cli:c?c.nombre:"",cliId:c?c.id:null,t:tot,pagado,metodo,vendedor:role==="dueno"?negocio.dueno:negocio.ayudante,secs,items:vl.map(l=>({c:l.code,q:l.q,p:unitPrice(l),d:lineDesc(l)}))};
   history.push(venta);
   cobros.push({f:venta.f,monto:pagado,metodo,ref:"N° "+pad(n)+(ent.on?" inicial":"")});
-  if(ent.on&&pagado<tot)pedidos.push({id:uid(),n,f:venta.f,cliId:venta.cliId,cli:venta.cli||"Cliente de mostrador",cel:c?c.cel:cliente.cel,items:venta.items.map(i=>i.q+" x "+i.d),total:tot,inicial:pagado,saldo:Math.round((tot-pagado)*100)/100,entrega:ent.fecha,estado:"pendiente"});
-  vl.forEach(l=>{const p=byCode(l.code);if(p.u==="m2")return;const o=overrides[p.c]||{};o.s=Math.max(0,p.s-l.q);overrides[p.c]=o});
+  if(ent.on&&pagado<tot)pedidos.push({id:uid(),n,f:venta.f,cliId:venta.cliId,cli:venta.cli||"Cliente de mostrador",cel:c?c.cel:cliente.cel,items:venta.items.map(i=>fmtQ(i.q)+" x "+i.d),total:tot,inicial:pagado,saldo:Math.round((tot-pagado)*100)/100,entrega:ent.fecha,estado:"pendiente"});
+  vl.forEach(l=>{const p=byCode(l.code);if(p.u==="m2")return;const o=overrides[p.c]||{};o.s=Math.round(((+(o.s!=null?o.s:p.s)||0)-l.q)*100)/100;overrides[p.c]=o});
   negocio.siguiente++;persist();buildInv();
   toast(ent.on&&pagado<tot?"Pedido N° "+pad(n)+" registrado. Saldo "+money(tot-pagado)+" a la entrega.":"Venta N° "+pad(n)+" registrada. Stock actualizado.");
   newOrder();show("resumen");
-});
+}
 function newOrder(){const pg=$("#pago");if(pg)pg.value="Efectivo";order=[];isDemo=false;orderStart=null;cliente={id:null,nombre:"",cel:"",doc:"",promo:false};ent.on=false;ent.touched=false;ent.fecha=hoyISO(2);ent.pct=50;renderOrder()}
 $("#btn-new").addEventListener("click",()=>{newOrder();show("pedido")});
 function persist(){
@@ -1272,12 +1341,13 @@ function drawProforma(){
   const cv=document.createElement("canvas"),ctx=cv.getContext("2d");
   ctx.font=F(400,30);
   const descW=W-2*P-120-180-200;
-  const rows=validLines().map(l=>({q:String(l.q).padStart(2,"0"),d:wrapText(ctx,lineDesc(l),descW),u:unitPrice(l).toFixed(2),t:lineTotal(l).toFixed(2)}));
+  const rows=validLines().map(l=>({q:fmtQ(l.q).padStart(2,"0"),d:wrapText(ctx,lineDesc(l),descW),u:unitPrice(l).toFixed(2),t:lineTotal(l).toFixed(2)}));
   const LG=logoImg?170:0;
+  const pend=pendientes();ctx.font=F(600,22);const pendL=pend.length?wrapText(ctx,"Cotización incompleta. Falta confirmar (no incluido en el total): "+pend.map(pendDesc).join("; "),W-2*P):[];const pendH=pendL.length*30+(pendL.length?20:0);
   ctx.font=F(700,46,1);const nameLines=wrapText(ctx,negocio.nombre.toUpperCase(),W-2*P-300-LG);
   ctx.font=F(400,24);const dataLines=wrapText(ctx,[negocio.direccion,negocio.celular?"Cel.: "+negocio.celular:""].filter(Boolean).join(" · "),W-2*P-300-LG);
   const headH=Math.max(170,nameLines.length*48+dataLines.length*32+20);
-  const H=P+headH+30+70+60+rows.reduce((a,r)=>a+r.d.length*38+24,0)+40+(ent.on?290:190)+80;
+  const H=P+headH+30+70+60+rows.reduce((a,r)=>a+r.d.length*38+24,0)+40+(ent.on?290:190)+80+pendH;
   cv.width=W;cv.height=H;
   ctx.fillStyle="#ffffff";ctx.fillRect(0,0,W,H);ctx.textBaseline="alphabetic";
   if(logoImg){const r=Math.min(155/logoImg.naturalWidth,155/logoImg.naturalHeight);ctx.drawImage(logoImg,P,P,logoImg.naturalWidth*r,logoImg.naturalHeight*r)}
@@ -1301,6 +1371,7 @@ function drawProforma(){
   y+=20;ctx.fillStyle=pk;ctx.fillRect(lx,y,rx-lx+14,4);y+=56;tl("TOTAL",money(tot),F(700,52,1),pk);
   if(ent.on){y+=48;tl("Inicial",money(entInicial()),F(600,30),pk);y+=42;tl("Saldo",money(tot-entInicial()),F(600,30),pk)}
   y+=60;ctx.font=F(400,22);ctx.fillStyle=mut;ctx.fillText((ent.on?"Fecha de entrega: "+fechaCorta(ent.fecha)+". ":"")+"Precios incluyen IGV. Proforma válida por 7 días.",P,y);
+  if(pendL.length){y+=20;ctx.font=F(600,22);ctx.fillStyle="#a35a00";pendL.forEach(t=>{y+=30;ctx.fillText(t,P,y)})}
   return cv;
 }
 $("#btn-img").addEventListener("click",async()=>{
@@ -1472,7 +1543,7 @@ function seed(){
 
 /* ===== Inicio ===== */
 function loadDemo(){order=parseOrder(EJEMPLO);isDemo=true;orderStart=null;renderOrder()}
-buildInv();seed();loadLogo();renderBiz();loadDemo();renderPendientes();initVoice();
+buildInv();seed();loadLogo();renderBiz();if(loadDraft())renderOrder();else loadDemo();renderPendientes();initVoice();
 
 /* ===== App instalada (PWA) ===== */
 if("serviceWorker" in navigator){const regSW=f=>document.readyState==="complete"?f():window.addEventListener("load",f);regSW(()=>{navigator.serviceWorker.register("sw.js").then(reg=>{
