@@ -119,6 +119,8 @@ textarea{width:100%;min-height:84px;border:1.5px solid var(--line);border-radius
 /* Proforma */
 .paper{background:#fff;color:#2a1f26;border-radius:6px;border:1px solid #e6d3dc;box-shadow:0 2px 10px rgba(0,0,0,.08);padding:16px;--pk:#b0195a}
 .paper .ph{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start;border-bottom:2px solid var(--pk);padding-bottom:10px}
+.paper .pbrand{display:flex;gap:10px;align-items:flex-start;min-width:0}
+.paper .plogo{width:64px;height:64px;object-fit:contain;flex:none}
 .paper .pbiz{font-family:var(--f-display);color:var(--pk);font-size:1.3rem;line-height:1.05;text-transform:uppercase}
 .paper .pdata{font-size:.78rem;color:#5d4a55;margin-top:4px;overflow-wrap:anywhere}
 .pbox{border:2px solid var(--pk);border-radius:8px;text-align:center;overflow:hidden;min-width:118px}
@@ -316,6 +318,7 @@ dl.ficha dd{margin:0;font-weight:600}
 
 <input type="file" id="file-photo" accept="image/*" capture="environment" hidden>
 <input type="file" id="file-backup" accept=".json,application/json" hidden>
+<input type="file" id="file-logo" accept="image/*" hidden>
 <input type="file" id="file-import" accept=".xlsx,.xls,.csv,.pdf,application/pdf" hidden>
 
 <script src="vendor/jspdf.umd.min.js"></script>
@@ -329,7 +332,8 @@ const NEGOCIO_DEFAULT = {
   siguiente: 1,
   dueno: "Dueño",
   ayudante: "Ayudante",
-  pin: ""
+  pin: "",
+  logo: "logo-proforma.png"
 };
 
 /* ===== Íconos de referencia por categoría ===== */
@@ -680,8 +684,8 @@ function renderProforma(){
   $("#ent-on").checked=ent.on;$("#ent-box").hidden=!ent.on;$("#ent-fecha").value=ent.fecha;$("#ent-pct").value=String(ent.pct);
   $("#cli-doc").value=cliente.doc||"";$("#cli-promo").checked=!!cliente.promo;
   const head=el("div",{class:"ph"},
-    el("div",{style:"min-width:0"},el("div",{class:"pbiz"},negocio.nombre),
-      el("div",{class:"pdata"},[negocio.direccion,negocio.celular?"Cel.: "+negocio.celular:""].filter(Boolean).join(" · "))),
+    el("div",{class:"pbrand"},negocio.logo?el("img",{class:"plogo",src:negocio.logo,alt:""}):null,el("div",{style:"min-width:0"},el("div",{class:"pbiz"},negocio.nombre),
+      el("div",{class:"pdata"},[negocio.direccion,negocio.celular?"Cel.: "+negocio.celular:""].filter(Boolean).join(" · ")))),
     el("div",{class:"pbox"},el("div",null,"PROFORMA"),el("div",{class:"num"},"N° "+pad(negocio.siguiente)),el("div",{class:"date"},fechaCorta(hoyISO(0))),negocio.ruc?el("div",{class:"date"},"RUC "+negocio.ruc):null));
   const nIn=el("input",{id:"cli-nombre",value:cliente.nombre,placeholder:"Nombre del cliente"});
   nIn.addEventListener("input",()=>{cliente.nombre=nIn.value;if(cliente.id){const c=clientes.find(x=>x.id===cliente.id);if(!c||c.nombre!==nIn.value)cliente.id=null}updateWa()});
@@ -726,14 +730,16 @@ $("#btn-copy")&&$("#btn-copy").addEventListener("click",()=>{
 function buildPdf(){
   const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:"mm",format:"a5"});
   const W=148,M=10,pk=[176,25,90];let y=14;
-  doc.setTextColor(...pk);doc.setFont("helvetica","bold");doc.setFontSize(14);
-  doc.text(doc.splitTextToSize(negocio.nombre.toUpperCase(),88),M,y);
+  const lg=logoDataUrl(),tx=lg?M+26:M,tw=lg?62:88;
+  if(lg){try{const r=Math.min(24/logoImg.naturalWidth,24/logoImg.naturalHeight);doc.addImage(lg,"JPEG",M,7,logoImg.naturalWidth*r,logoImg.naturalHeight*r)}catch(e){}}
+  doc.setTextColor(...pk);doc.setFont("helvetica","bold");doc.setFontSize(lg?12:14);
+  const nl=doc.splitTextToSize(negocio.nombre.toUpperCase(),tw);doc.text(nl,tx,y);
   doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(90,70,80);
-  doc.text(doc.splitTextToSize([negocio.direccion,negocio.celular?"Cel.: "+negocio.celular:""].filter(Boolean).join(" · "),88),M,y+7);
+  doc.text(doc.splitTextToSize([negocio.direccion,negocio.celular?"Cel.: "+negocio.celular:""].filter(Boolean).join(" · "),tw),tx,y+nl.length*5+2);
   doc.setDrawColor(...pk);doc.setLineWidth(.6);doc.roundedRect(W-M-40,8,40,24,2,2);
   doc.setFillColor(...pk);doc.rect(W-M-40,8,40,7,"F");doc.setTextColor(255);doc.setFont("helvetica","bold");doc.setFontSize(10);doc.text("PROFORMA",W-M-20,13,{align:"center"});
-  doc.setTextColor(...pk);doc.setFontSize(12);doc.text("N° "+pad(negocio.siguiente),W-M-20,22,{align:"center"});
-  doc.setFontSize(8);doc.setTextColor(60);doc.setFont("helvetica","normal");doc.text(fechaCorta(hoyISO(0))+(negocio.ruc?"  RUC "+negocio.ruc:""),W-M-20,28,{align:"center"});
+  doc.setTextColor(...pk);doc.setFontSize(12);doc.text("N° "+pad(negocio.siguiente),W-M-20,negocio.ruc?20.5:22,{align:"center"});
+  doc.setFontSize(7.5);doc.setTextColor(60);doc.setFont("helvetica","normal");doc.text(fechaCorta(hoyISO(0)),W-M-20,negocio.ruc?25:28,{align:"center"});if(negocio.ruc)doc.text("RUC "+negocio.ruc,W-M-20,29.5,{align:"center"});
   y=38;doc.setTextColor(...pk);doc.setFontSize(9);doc.text("Señor(es): ",M,y);doc.setTextColor(30);doc.text(cliente.nombre||"—",M+18,y);
   y+=6;doc.setFillColor(...pk);doc.rect(M,y,W-2*M,7,"F");doc.setTextColor(255);doc.setFont("helvetica","bold");doc.setFontSize(8);
   doc.text("CANT.",M+2,y+4.8);doc.text("DESCRIPCIÓN",M+16,y+4.8);doc.text("P. UNIT.",W-M-26,y+4.8,{align:"right"});doc.text("IMPORTE",W-M-2,y+4.8,{align:"right"});
@@ -750,6 +756,10 @@ function buildPdf(){
   y+=10;doc.setFont("helvetica","normal");doc.setFontSize(7.5);doc.setTextColor(110);doc.text((ent.on?"Fecha de entrega: "+fechaCorta(ent.fecha)+". ":"")+"Precios incluyen IGV. Proforma válida por 7 días.",M,y);
   return doc.output("blob");
 }
+/* Logo del negocio para proforma, PDF y JPG */
+let logoImg=null;
+function loadLogo(){logoImg=null;if(!negocio.logo)return;const i=new Image();i.onload=()=>{logoImg=i};i.src=negocio.logo}
+function logoDataUrl(){if(!logoImg)return null;try{const c=document.createElement("canvas");c.width=logoImg.naturalWidth;c.height=logoImg.naturalHeight;const x=c.getContext("2d");x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);x.drawImage(logoImg,0,0);return c.toDataURL("image/jpeg",.92)}catch(e){return null}}
 let downloads=null;
 async function saveFile(name,data){
   if(downloads){try{await downloads.save({filename:name,data});toast("Archivo guardado");return true}catch(e){if(e&&e.code!=="declined")toast(e.code==="host_unavailable"?"Abre esta página en el navegador para guardar archivos":"No se pudo guardar el archivo");return false}}
@@ -1221,18 +1231,20 @@ function drawProforma(){
   ctx.font=F(400,30);
   const descW=W-2*P-120-180-200;
   const rows=validLines().map(l=>({q:String(l.q).padStart(2,"0"),d:wrapText(ctx,lineDesc(l),descW),u:unitPrice(l).toFixed(2),t:lineTotal(l).toFixed(2)}));
-  ctx.font=F(700,46,1);const nameLines=wrapText(ctx,negocio.nombre.toUpperCase(),W-2*P-300);
-  ctx.font=F(400,24);const dataLines=wrapText(ctx,[negocio.direccion,negocio.celular?"Cel.: "+negocio.celular:""].filter(Boolean).join(" · "),W-2*P-300);
+  const LG=logoImg?170:0;
+  ctx.font=F(700,46,1);const nameLines=wrapText(ctx,negocio.nombre.toUpperCase(),W-2*P-300-LG);
+  ctx.font=F(400,24);const dataLines=wrapText(ctx,[negocio.direccion,negocio.celular?"Cel.: "+negocio.celular:""].filter(Boolean).join(" · "),W-2*P-300-LG);
   const headH=Math.max(170,nameLines.length*48+dataLines.length*32+20);
   const H=P+headH+30+70+60+rows.reduce((a,r)=>a+r.d.length*38+24,0)+40+(ent.on?290:190)+80;
   cv.width=W;cv.height=H;
   ctx.fillStyle="#ffffff";ctx.fillRect(0,0,W,H);ctx.textBaseline="alphabetic";
-  let y=P+40;ctx.fillStyle=pk;ctx.font=F(700,46,1);nameLines.forEach(t=>{ctx.fillText(t,P,y);y+=48});
-  ctx.fillStyle=mut;ctx.font=F(400,24);dataLines.forEach(t=>{ctx.fillText(t,P,y);y+=32});
+  if(logoImg){const r=Math.min(155/logoImg.naturalWidth,155/logoImg.naturalHeight);ctx.drawImage(logoImg,P,P,logoImg.naturalWidth*r,logoImg.naturalHeight*r)}
+  let y=P+40;ctx.fillStyle=pk;ctx.font=F(700,46,1);nameLines.forEach(t=>{ctx.fillText(t,P+LG,y);y+=48});
+  ctx.fillStyle=mut;ctx.font=F(400,24);dataLines.forEach(t=>{ctx.fillText(t,P+LG,y);y+=32});
   const bx=W-P-260;ctx.strokeStyle=pk;ctx.lineWidth=4;ctx.beginPath();ctx.roundRect?ctx.roundRect(bx,P,260,160,16):ctx.rect(bx,P,260,160);ctx.stroke();
   ctx.fillStyle=pk;ctx.fillRect(bx,P,260,50);ctx.fillStyle="#fff";ctx.font=F(700,32,1);ctx.textAlign="center";ctx.fillText("PROFORMA",bx+130,P+36);
-  ctx.fillStyle=pk;ctx.font=F(700,42,1);ctx.fillText("N° "+pad(negocio.siguiente),bx+130,P+100);
-  ctx.fillStyle=ink;ctx.font=F(400,24);ctx.fillText(fechaCorta(hoyISO(0))+(negocio.ruc?" · RUC "+negocio.ruc:""),bx+130,P+140);ctx.textAlign="left";
+  ctx.fillStyle=pk;ctx.font=F(700,42,1);ctx.fillText("N° "+pad(negocio.siguiente),bx+130,negocio.ruc?P+94:P+100);
+  ctx.fillStyle=ink;ctx.font=F(400,22);ctx.fillText(fechaCorta(hoyISO(0)),bx+130,negocio.ruc?P+124:P+140);if(negocio.ruc)ctx.fillText("RUC "+negocio.ruc,bx+130,P+150);ctx.textAlign="left";
   y=P+headH+20;ctx.fillStyle=pk;ctx.fillRect(P,y,W-2*P,4);y+=56;
   ctx.font=F(600,28);ctx.fillStyle=pk;ctx.fillText("Señor(es):",P,y);ctx.fillStyle=ink;ctx.font=F(400,28);ctx.fillText((cliente.nombre||"—")+(cliente.cel?"   Cel.: "+cliente.cel:""),P+150,y);
   y+=30;ctx.fillStyle=pk;ctx.fillRect(P,y,W-2*P,54);ctx.fillStyle="#fff";ctx.font=F(600,24);
@@ -1332,6 +1344,10 @@ function configSheet(){
   openSheet(sh=>{
     const f={nombre:el("input",{id:"cf-n",value:negocio.nombre}),ruc:el("input",{id:"cf-r",value:negocio.ruc,inputmode:"numeric"}),direccion:el("input",{id:"cf-d",value:negocio.direccion}),celular:el("input",{id:"cf-c",value:negocio.celular,inputmode:"tel"}),siguiente:el("input",{id:"cf-s",type:"number",value:negocio.siguiente}),dueno:el("input",{id:"cf-du",value:negocio.dueno}),ayudante:el("input",{id:"cf-ay",value:negocio.ayudante}),pin:el("input",{id:"cf-pin",value:negocio.pin,type:"password",inputmode:"numeric",maxlength:"6",autocomplete:"new-password",placeholder:"4 a 6 números"})};
     sh.append(el("h3",null,"Negocio y seguridad"),el("p",{class:"hint"},"Estos datos salen en la proforma. Todo se guarda solo en este celular."),
+      el("div",{class:"field"},"Logo de la proforma",el("div",{style:"display:flex;gap:10px;align-items:center;margin-top:6px"},
+        negocio.logo?el("img",{src:negocio.logo,alt:"Logo actual",style:"width:56px;height:56px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:8px"}):el("span",{class:"hint",style:"margin:0"},"Sin logo"),
+        el("button",{class:"btn",type:"button",onclick:()=>$("#file-logo").click()},negocio.logo?"Cambiar":"Subir logo"),
+        negocio.logo?el("button",{class:"btn ghost",type:"button",onclick:()=>{negocio.logo="";persist();loadLogo();closeSheet();configSheet();refresh();toast("Logo quitado")}},"Quitar"):null)),
       el("label",{class:"field"},"Nombre del negocio",f.nombre),el("div",{class:"grid2"},el("label",{class:"field"},"RUC",f.ruc),el("label",{class:"field"},"Siguiente N° de proforma",f.siguiente)),el("label",{class:"field"},"Dirección o rubro",f.direccion),el("label",{class:"field"},"Celular",f.celular),
       el("div",{class:"eyebrow",style:"margin-top:6px"},"Quiénes usan la app"),el("div",{class:"grid2"},el("label",{class:"field"},"Nombre del dueño",f.dueno),el("label",{class:"field"},"Nombre del ayudante",f.ayudante)),
       el("label",{class:"field"},"PIN del dueño (el ayudante no lo necesita)",f.pin),
@@ -1349,11 +1365,19 @@ function configSheet(){
     f.nombre.dataset.nofocus="1";
   });
 }
+$("#file-logo").addEventListener("change",e=>{
+  const f=e.target.files&&e.target.files[0];e.target.value="";if(!f)return;
+  const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{
+    const s=Math.min(1,320/Math.max(im.width,im.height)),cv=document.createElement("canvas");cv.width=Math.round(im.width*s);cv.height=Math.round(im.height*s);
+    cv.getContext("2d").drawImage(im,0,0,cv.width,cv.height);negocio.logo=cv.toDataURL("image/png");
+    if(negocio.logo.length>400000)negocio.logo=cv.toDataURL("image/jpeg",.85);
+    persist();loadLogo();closeSheet();configSheet();refresh();toast("Logo guardado")};im.src=r.result};r.readAsDataURL(f);
+});
 $("#file-backup").addEventListener("change",e=>{
   const f=e.target.files&&e.target.files[0];e.target.value="";if(!f)return;
   const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(d.app!=="pedido-por-voz")throw 0;
     negocio=Object.assign({},NEGOCIO_DEFAULT,d.negocio);overrides=d.overrides||{};custom=d.custom||[];fotos=d.fotos||{};history=d.history||[];cobros=d.cobros||[];clientes=d.clientes||[];pedidos=d.pedidos||[];campanas=d.campanas||[];cajas=d.cajas||{};
-    persist();save("fotos",fotos);buildInv();renderBiz();closeSheet();refresh();toast("Respaldo restaurado")}catch(err){toast("Ese archivo no es un respaldo de esta app")}};r.readAsText(f);
+    persist();save("fotos",fotos);buildInv();loadLogo();renderBiz();closeSheet();refresh();toast("Respaldo restaurado")}catch(err){toast("Ese archivo no es un respaldo de esta app")}};r.readAsText(f);
 });
 
 /* ===== Voz ===== */
@@ -1406,7 +1430,7 @@ function seed(){
 
 /* ===== Inicio ===== */
 function loadDemo(){order=parseOrder(EJEMPLO);isDemo=true;orderStart=null;renderOrder()}
-buildInv();seed();renderBiz();loadDemo();renderPendientes();initVoice();
+buildInv();seed();loadLogo();renderBiz();loadDemo();renderPendientes();initVoice();
 
 /* ===== App instalada (PWA) ===== */
 if("serviceWorker" in navigator){window.addEventListener("load",()=>{navigator.serviceWorker.register("sw.js").then(reg=>{
